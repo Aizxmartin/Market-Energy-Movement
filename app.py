@@ -18,9 +18,10 @@ Upload your MLS CSV and generate a **Momentum Report** as a Word (.docx) file.
 **Required columns (exact names):**
 - `Mls Status`, `Close Date`, `List Price`, `Close Price`
 
-**Optional columns:**
+**Optional columns for enhanced metrics:**
 - `Seller Concessions` (defaults to 0 if missing)
-- `DaysInMLS` or `Days in MLS` (for Avg/Median Days on MLS in closed window)
+- **Days on Market column** — any of these will be auto-detected (case-insensitive):  
+  `DaysInMLS`, `Days in MLS`, `Days In MLS`, `Days on Market`, `DOM`, `Cumulative DOM`, `CDOM`
 """)
 
 uploaded = st.file_uploader("Upload CSV", type=["csv"])
@@ -54,18 +55,35 @@ def bucket_status(s: str) -> str:
         return "Active"
     return "Other"
 
-def get_dom_series(df: pd.DataFrame) -> pd.Series:
-    dom_col = None
-    if "DaysInMLS" in df.columns:
-        dom_col = "DaysInMLS"
-    elif "Days in MLS" in df.columns:
-        dom_col = "Days in MLS"
-    if dom_col is None:
-        return pd.Series([np.nan] * len(df))
+# Find a DOM column with case-insensitive aliasing
+DOM_ALIASES = [
+    "daysinmls", "days in mls", "days in mls", "days on market",
+    "dom", "cumulative dom", "cdom"
+]
+
+def find_dom_column(df: pd.DataFrame):
+    lower_map = {c.lower().strip(): c for c in df.columns}
+    for alias in DOM_ALIASES:
+        if alias in lower_map:
+            return lower_map[alias]
+    # fallback: try partial contains for common patterns
+    for c in df.columns:
+        cl = c.lower().strip()
+        if "days" in cl and ("mls" in cl or "market" in cl):
+            return c
+        if cl in ("dom", "cdom"):
+            return c
+    return None
+
+def get_dom_series(df: pd.DataFrame):
+    col = find_dom_column(df)
+    if col is None:
+        return pd.Series([np.nan] * len(df)), None
     try:
-        return pd.to_numeric(df[dom_col].astype(str).str.replace(",", "", regex=False), errors="coerce")
+        s = pd.to_numeric(df[col].astype(str).str.replace(",", "", regex=False), errors="coerce")
     except Exception:
-        return pd.to_numeric(df[dom_col], errors="coerce")
+        s = pd.to_numeric(df[col], errors="coerce")
+    return s, col
 
 def build_docx(df: pd.DataFrame, days: int) -> bytes:
     has_concessions = "Seller Concessions" in df.columns
@@ -76,7 +94,7 @@ def build_docx(df: pd.DataFrame, days: int) -> bytes:
     df["_list_price"] = df["List Price"].apply(to_num)
     df["_close_price"] = df["Close Price"].apply(to_num)
     df["_concessions"] = df["Seller Concessions"].apply(to_num) if has_concessions else 0.0
-    df["_dom"] = get_dom_series(df)
+    df["_dom"], dom_used_col = get_dom_series(df)
 
     today = datetime.today()
     window_start = today - timedelta(days=days)
@@ -136,8 +154,13 @@ def build_docx(df: pd.DataFrame, days: int) -> bytes:
     )
 
     doc.add_paragraph("Days in MLS (Closed, Window)", style=None).runs[0].bold = True
-    doc.add_paragraph(f"Average DaysInMLS: {avg_dom:.1f}" if not np.isnan(avg_dom) else "Average DaysInMLS: N/A")
-    doc.add_paragraph(f"Median DaysInMLS: {median_dom:.1f}" if not np.isnan(median_dom) else "Median DaysInMLS: N/A")
+    if not np.isnan(avg_dom) or not np.isnan(median_dom):
+        if dom_used_col:
+            doc.add_paragraph(f"Using column: {dom_used_col}")
+        doc.add_paragraph(f"Average DaysInMLS: {avg_dom:.1f}" if not np.isnan(avg_dom) else "Average DaysInMLS: N/A")
+        doc.add_paragraph(f"Median DaysInMLS: {median_dom:.1f}" if not np.isnan(median_dom) else "Median DaysInMLS: N/A")
+    else:
+        doc.add_paragraph("No Days in MLS column detected (avg/median not computed).")
 
     doc.add_paragraph("")
     doc.add_paragraph("Formula", style=None).runs[0].bold = True
