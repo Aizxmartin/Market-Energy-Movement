@@ -4,9 +4,8 @@ import os
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from docx import Document
-from docx.shared import Pt, Inches
+from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 REQUIRED_COLUMNS = [
@@ -14,8 +13,7 @@ REQUIRED_COLUMNS = [
     "Close Date",
     "List Price",
     "Close Price",
-    # "Seller Concessions",  # now optional
-    # "DaysInMLS",          # allow alias "Days in MLS"
+    # Optional: "Seller Concessions", "DaysInMLS" or "Days in MLS"
 ]
 
 ACTIVE_KEYS = ["active", "coming soon", "back on market", "a/"]
@@ -60,7 +58,7 @@ def get_dom_series(df: pd.DataFrame) -> pd.Series:
         return pd.to_numeric(df[dom_col], errors="coerce")
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate Momentum Report from MLS CSV (fixed field names where possible).")
+    parser = argparse.ArgumentParser(description="Generate Momentum Report from MLS CSV (no charts).")
     parser.add_argument("csv_path", help="Path to the CSV file with required fields.")
     parser.add_argument("--days", type=int, default=90, help="Window (days) for solds, default 90.")
     args = parser.parse_args()
@@ -75,7 +73,6 @@ def main():
     if missing:
         raise SystemExit(f"Missing required columns: {missing}")
 
-    # Optional columns setup
     has_concessions = "Seller Concessions" in df.columns
 
     # Prep
@@ -103,7 +100,6 @@ def main():
     # Ranges
     active_prices = df.loc[df["_bucket"] == "Active", "_list_price"].dropna()
     pending_prices = df.loc[df["_bucket"] == "Pending", "_list_price"].dropna()
-
     net_price = df["_close_price"] - (df["_concessions"] if has_concessions else 0)
     sold_net_prices = net_price.loc[is_sold_window].dropna()
 
@@ -119,22 +115,11 @@ def main():
     avg_dom = float(dom_series.mean()) if not dom_series.empty else np.nan
     median_dom = float(dom_series.median()) if not dom_series.empty else np.nan
 
-    # Chart
+    # DOCX report only (no charts)
     out_dir = os.path.dirname(os.path.abspath(csv_path)) or "."
     date_stamp = today.strftime("%Y%m%d")
-    chart_path = os.path.join(out_dir, f"momentum_counts_{date_stamp}.png")
-    summary_counts = {"Active": active_count, "Pending": pending_count, f"Solds ({args.days}d)": sold_window_count}
+    out_docx = os.path.join(out_dir, f"Momentum_Report_{date_stamp}.docx")
 
-    # Create bar chart
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.bar(list(summary_counts.keys()), list(summary_counts.values()))
-    ax.set_title("Status Counts")
-    ax.set_ylabel("Count")
-    plt.tight_layout()
-    fig.savefig(chart_path, dpi=150)
-    plt.close(fig)
-
-    # DOCX report
     doc = Document()
     title = doc.add_paragraph("Momentum Report")
     title.runs[0].font.size = Pt(20)
@@ -149,10 +134,7 @@ def main():
     doc.add_paragraph(f"Active: {active_count}")
     doc.add_paragraph(f"Pending: {pending_count}")
     doc.add_paragraph(f"Solds (last {args.days}d): {sold_window_count}")
-    if not np.isnan(moi):
-        doc.add_paragraph(f"Months of Inventory (MOI): {moi:.3f}")
-    else:
-        doc.add_paragraph("Months of Inventory (MOI): N/A")
+    doc.add_paragraph(f"Months of Inventory (MOI): {moi:.3f}" if not np.isnan(moi) else "Months of Inventory (MOI): N/A")
 
     doc.add_paragraph("Price Ranges", style=None).runs[0].bold = True
     doc.add_paragraph(
@@ -173,11 +155,6 @@ def main():
     doc.add_paragraph(f"Median DaysInMLS: {median_dom:.1f}" if not np.isnan(median_dom) else "Median DaysInMLS: N/A")
 
     doc.add_paragraph("")
-    doc.add_paragraph("Status Counts Chart", style=None).runs[0].bold = True
-    if os.path.exists(chart_path):
-        doc.add_picture(chart_path, width=Inches(5.5))
-
-    doc.add_paragraph("")
     doc.add_paragraph("Formula", style=None).runs[0].bold = True
     doc.add_paragraph(f"MOI = Active / ((Solds_{args.days}d / 3) + Pending)")
 
@@ -188,11 +165,8 @@ def main():
         "optional fields like Seller Concessions and DaysInMLS may be omitted."
     )
 
-    out_docx = os.path.join(out_dir, f"Momentum_Report_{date_stamp}.docx")
     doc.save(out_docx)
-
     print("Report saved:", out_docx)
-    print("Chart saved:", chart_path)
 
 if __name__ == "__main__":
     main()
